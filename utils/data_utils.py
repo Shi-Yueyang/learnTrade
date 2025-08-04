@@ -1,125 +1,84 @@
-"""
-Utility functions for quantitative trading analysis
-"""
-
-import pandas as pd
-import numpy as np
+import os
+import requests
+from datetime import datetime
 import yfinance as yf
-from datetime import datetime, timedelta
-import warnings
-warnings.filterwarnings('ignore')
+import pandas as pd
 
-def download_stock_data(symbol, start_date=None, end_date=None, period="2y"):
-    """
-    Download stock data using yfinance
-    
-    Parameters:
-    - symbol: Stock ticker symbol
-    - start_date: Start date (YYYY-MM-DD)
-    - end_date: End date (YYYY-MM-DD)
-    - period: Period to download if dates not specified
-    
-    Returns:
-    - DataFrame with stock data
-    """
-    if start_date and end_date:
-        data = yf.download(symbol, start=start_date, end=end_date, progress=False)
-    else:
-        data = yf.download(symbol, period=period, progress=False)
-    
-    return data
 
-def calculate_returns(prices, method='simple'):
-    """
-    Calculate returns from price series
+class DataManager:
+    """A comprehensive data manager for financial data acquisition and processing."""
     
-    Parameters:
-    - prices: Series of prices
-    - method: 'simple' or 'log'
+    def __init__(self, use_proxy=True, proxy_host="localhost", proxy_port=10809):
+        self.use_proxy = use_proxy
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
+        self.session = None
+        self._setup_session()
     
-    Returns:
-    - Series of returns
-    """
-    if method == 'simple':
-        return prices.pct_change()
-    elif method == 'log':
-        return np.log(prices / prices.shift(1))
-    else:
-        raise ValueError("Method must be 'simple' or 'log'")
+    def _setup_session(self):
+        """Set up requests session with proxy if needed."""
+        self.session = requests.Session()
+        if self.use_proxy:
+            proxy_url = f"http://{self.proxy_host}:{self.proxy_port}"
+            self.session.proxies.update({
+                'http': proxy_url,
+                'https': proxy_url
+            })
+            # Set environment variables for yfinance
+            os.environ['HTTP_PROXY'] = proxy_url
+            os.environ['HTTPS_PROXY'] = proxy_url
+            print(f"🌐 Proxy configured: {proxy_url}")
+    
+    def get_stock_data(self, symbol, start_date, end_date=None, period="1d"):
+        """Download stock data with comprehensive error handling."""
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        
+        try:
+            
+            ticker = yf.Ticker(symbol)
+            if self.use_proxy:
+                ticker.session = self.session
+            
+            data = ticker.history(start=start_date, end=end_date, interval=period)
+            
+            if data.empty:
+                raise ValueError(f"No data found for symbol {symbol}")
+            
+            # Clean up data
+            data = data.dropna()
+            data.index = pd.to_datetime(data.index)
+            
+            print(f"✅ Successfully downloaded {len(data)} trading days")
 
-def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
-    """
-    Calculate Sharpe ratio
+            return data
+            
+        except Exception as e:
+            print(f"❌ Error downloading data for {symbol}: {str(e)}")
+            return None
     
-    Parameters:
-    - returns: Series of returns
-    - risk_free_rate: Annual risk-free rate
+    def get_multiple_stocks(self, symbols, start_date, end_date=None):
+        """Download data for multiple stocks."""
+        data_dict = {}
+        for symbol in symbols:
+            data = self.get_stock_data(symbol, start_date, end_date)
+            if data is not None:
+                data_dict[symbol] = data
+        return data_dict
     
-    Returns:
-    - Sharpe ratio
-    """
-    excess_returns = returns - risk_free_rate/252
-    return excess_returns.mean() / returns.std() * np.sqrt(252)
-
-def calculate_max_drawdown(returns):
-    """
-    Calculate maximum drawdown
+    def calculate_return(self,data,price_column='Close'):
+        current_price = data[price_column].iloc[-1]
+        start_price = data[price_column].iloc[0]
+        return_value = (current_price - start_price) / start_price * 100
+        return return_value
     
-    Parameters:
-    - returns: Series of returns
+    def calculate_return(self,symbols,start_date,end_date=None,column='Close'):
+        """Calculate returns for multiple stocks."""
+        returns = {}
+        for symbol in symbols:
+            data = self.get_stock_data(symbol, start_date, end_date)
+            if data is not None:
+                returns[symbol] = self.calculate_return(data, column)
+        return returns
     
-    Returns:
-    - Maximum drawdown value
-    """
-    cumulative = (1 + returns).cumprod()
-    rolling_max = cumulative.expanding().max()
-    drawdown = (cumulative - rolling_max) / rolling_max
-    return drawdown.min()
-
-def validate_data(data, required_columns=['Open', 'High', 'Low', 'Close', 'Volume']):
-    """
-    Validate that data has required columns and no missing values
     
-    Parameters:
-    - data: DataFrame to validate
-    - required_columns: List of required column names
-    
-    Returns:
-    - Boolean indicating if data is valid
-    """
-    # Check required columns
-    for col in required_columns:
-        if col not in data.columns:
-            print(f"Missing required column: {col}")
-            return False
-    
-    # Check for missing values
-    missing_data = data[required_columns].isnull().sum()
-    if missing_data.sum() > 0:
-        print("Missing values found:")
-        for col, missing in missing_data.items():
-            if missing > 0:
-                print(f"  {col}: {missing}")
-        return False
-    
-    return True
-
-def print_performance_summary(strategy_return, benchmark_return, strategy_sharpe, max_dd):
-    """
-    Print a formatted performance summary
-    
-    Parameters:
-    - strategy_return: Strategy total return
-    - benchmark_return: Benchmark total return  
-    - strategy_sharpe: Strategy Sharpe ratio
-    - max_dd: Maximum drawdown
-    """
-    print("=" * 50)
-    print("PERFORMANCE SUMMARY")
-    print("=" * 50)
-    print(f"Strategy Return:    {strategy_return:.2%}")
-    print(f"Benchmark Return:   {benchmark_return:.2%}")
-    print(f"Excess Return:      {strategy_return - benchmark_return:.2%}")
-    print(f"Sharpe Ratio:       {strategy_sharpe:.3f}")
-    print(f"Maximum Drawdown:   {max_dd:.2%}")
-    print("=" * 50)
